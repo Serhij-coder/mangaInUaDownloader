@@ -1,7 +1,6 @@
 import os
 import re
 import time
-import json
 import shutil
 import pathlib
 import requests
@@ -11,9 +10,9 @@ from playwright.sync_api import sync_playwright
 
 # Manga directory from HOME
 MANGA_DIR = "Manga/"
-MANGA_URL = "https://manga.in.ua/mangas/boyovik/105-tokiiskyi-gul.html" # Empty for user input
+MANGA_URL = "" # Empty for user input
 
-DECORATIVE_DELAY = 0.05
+DECORATIVE_DELAY = 0.01
 LOAD_DELAY = 0.3
 
 # Control or create "Manga" folder
@@ -91,7 +90,12 @@ with sync_playwright() as p:
     mangaDict['title'] = mangaName
 
     for i, chapter in enumerate(tqdm(chapters, desc="Getting pictures links")):
-        chapterDictKey = f'chapter{i}'
+        if i < 10:
+            chapterDictKey = f"00{i}"
+        elif i < 100:
+            chapterDictKey = f"0{i}"
+        else:
+            chapterDictKey = f"{i}"
         mangaDict[chapterDictKey] = {}
 
         chapterPage = context.new_page()
@@ -115,42 +119,50 @@ with sync_playwright() as p:
         # Close tab to save RAM
         chapterPage.close()
 
-    print(json.dumps(mangaDict, ensure_ascii=False, indent=4))
-
-    inp = input("Want to save JSON file? [y/N]: ").lower()
-    if inp == "y":
-        with open(f"{mangaDirectory}/{mangaNameLatin}.json", "w") as json_file:
-            json.dump(mangaDict, json_file, ensure_ascii=False, indent=4)
-            print("JSON file saved successfully.")
-    else:
-        print("JSON file not saved.")
-
     # Close browser
     browser.close()
 
     # Download images
-    for chapterKey, chapterData in tqdm(mangaDict.items(), desc="Downloading images"):
+    # Filename example: "Okusama wa Shougakusei c003 (v01)"
+    for chapterKey, chapterData in mangaDict.items():
         if chapterKey == "title":
             continue
 
-        chapterName = chapterData["name"]
-        chapterPath = os.path.join(mangaDirectory, chapterName)
+        volumeNumber = re.search(r'tom-(\d+)', chapterData["url"], re.IGNORECASE)
+        volumeNumber = int(volumeNumber.group(1))
+        if volumeNumber < 10:
+            volumeNumber = "0" + str(volumeNumber)
+        else:
+            volumeNumber = str(volumeNumber)
 
-        os.makedirs(chapterPath, exist_ok=True)
+        fileName = f"{mangaName} c{chapterKey} (v{volumeNumber})"
 
-        #<--Chat GPT-->
-        for i, imageUrl in enumerate(chapterData["images"]):
-            # Отримуємо розширення файлу
-            ext = os.path.splitext(imageUrl)[1]
-            image_path = os.path.join(chapterPath, f"{i:03d}{ext}")
+        # Create temd dir for bictures before archive
+        tempDir = os.path.join(mangaDirectory, "temp")
+        if not os.path.exists(tempDir):
+            os.makedirs(tempDir)
 
-            # Завантаження зображення
-            try:
-                response = requests.get(imageUrl)
-                response.raise_for_status()
+        # Download images
+        imageUrls = chapterData["images"]
+        for i, imageUrl in enumerate(tqdm(imageUrls, desc=f"Downloading chapter {chapterKey}")):
+            # Get file extension from URL
+            extension = imageUrl.split(".")[-1]
+            image = requests.get(imageUrl).content
 
-                with open(image_path, "wb") as f:
-                    f.write(response.content)
-            except Exception as e:
-                ...
-        #>--Chat GPT--<
+            if "404 Not Found" in str(image):
+                continue
+
+            if i < 10:
+                filenum = f"0{i}"
+            else:
+                filenum = str(i)
+            f = open(f"{tempDir}/{filenum}.{extension}", "wb")
+            f.write(image)
+            f.close()
+        
+        # Create cbz archive
+        shutil.make_archive(f"{mangaDirectory}/{fileName}", "zip", tempDir)
+        os.rename(f"{mangaDirectory}/{fileName}.zip", f"{mangaDirectory}/{fileName}.cbz")
+
+        # Clean up temporary directory
+        shutil.rmtree(tempDir)      
